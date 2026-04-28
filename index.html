@@ -25,15 +25,12 @@
       box-shadow: 0 2px 6px rgba(0,0,0,0.1);
     }
 
-    #chart {
-      height: 35vh;
-    }
-
     .stats {
       font-size: 14px;
       margin-bottom: 8px;
       display: flex;
       gap: 20px;
+      align-items: center;
     }
 
     button {
@@ -53,7 +50,7 @@
 <div class="panel">
   <div class="stats">
     <div><b>Distancia:</b> <span id="dist">0</span> km</div>
-    <div><b>Ritmo:</b> <span id="pace">-</span> min/km</div>
+    <div><b>Desnivel +:</b> <span id="elevGain">0</span> m</div>
     <button id="playBtn">▶️ Play</button>
   </div>
   <canvas id="chart"></canvas>
@@ -82,7 +79,7 @@ function distance(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// suavizado
+// suavizado elevación
 function smooth(data, windowSize = 5) {
   return data.map((_, i, arr) => {
     const start = Math.max(0, i - windowSize);
@@ -104,19 +101,19 @@ fetch('ruta.gpx')
     let coords = [];
     let elev = [];
     let dist = [0];
-    let times = [];
 
     let totalDist = 0;
+    let elevGain = 0;
 
     trkpts.forEach((p, i) => {
       const lat = parseFloat(p.getAttribute("lat"));
       const lon = parseFloat(p.getAttribute("lon"));
       const ele = p.getElementsByTagName("ele")[0]?.textContent;
-      const time = p.getElementsByTagName("time")[0]?.textContent;
+
+      const elevation = ele ? parseFloat(ele) : 0;
 
       coords.push([lat, lon]);
-      elev.push(ele ? parseFloat(ele) : 0);
-      times.push(time ? new Date(time) : null);
+      elev.push(elevation);
 
       if (i > 0) {
         totalDist += distance(
@@ -124,6 +121,10 @@ fetch('ruta.gpx')
           lat, lon
         );
         dist.push(totalDist);
+
+        // 🔥 DESNIVEL POSITIVO
+        const diff = elevation - elev[i-1];
+        if (diff > 0) elevGain += diff;
       }
     });
 
@@ -147,20 +148,7 @@ fetch('ruta.gpx')
 
     // stats
     document.getElementById("dist").innerText = totalDist.toFixed(2);
-
-    // cálculo ritmo
-    let pace = "-";
-    if (times[0] && times[times.length - 1]) {
-      const totalTimeMin = (times[times.length - 1] - times[0]) / 60000;
-      const paceMinKm = totalTimeMin / totalDist;
-
-      const min = Math.floor(paceMinKm);
-      const sec = Math.round((paceMinKm - min) * 60);
-
-      pace = `${min}:${sec.toString().padStart(2,'0')}`;
-    }
-
-    document.getElementById("pace").innerText = pace;
+    document.getElementById("elevGain").innerText = Math.round(elevGain);
 
     // gráfico
     new Chart(document.getElementById("chart"), {
@@ -191,7 +179,7 @@ fetch('ruta.gpx')
       }
     });
 
-    // 🎬 ANIMACIÓN
+    // animación
     let playing = false;
     let index = 0;
     let interval;
@@ -212,7 +200,7 @@ fetch('ruta.gpx')
             document.getElementById("playBtn").innerText = "▶️ Play";
             index = 0;
           }
-        }, 50); // velocidad
+        }, 50);
       } else {
         clearInterval(interval);
         document.getElementById("playBtn").innerText = "▶️ Play";
