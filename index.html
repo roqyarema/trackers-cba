@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Visor GPX PRO</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, Arial;
+      background: #f0f2f5;
+    }
+
+    #map {
+      height: 55vh;
+    }
+
+    .panel {
+      background: white;
+      margin: 10px;
+      border-radius: 12px;
+      padding: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+
+    #chart {
+      height: 35vh;
+    }
+
+    .stats {
+      font-size: 14px;
+      margin-bottom: 8px;
+      display: flex;
+      gap: 20px;
+    }
+
+    button {
+      padding: 6px 12px;
+      border: none;
+      border-radius: 6px;
+      background: #007bff;
+      color: white;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="panel">
+  <div class="stats">
+    <div><b>Distancia:</b> <span id="dist">0</span> km</div>
+    <div><b>Ritmo:</b> <span id="pace">-</span> min/km</div>
+    <button id="playBtn">▶️ Play</button>
+  </div>
+  <canvas id="chart"></canvas>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+const map = L.map('map').setView([-31.4, -64.2], 13);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+// distancia Haversine
+function distance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI/180;
+  const dLon = (lon2 - lon1) * Math.PI/180;
+
+  const a =
+    Math.sin(dLat/2)**2 +
+    Math.cos(lat1*Math.PI/180) *
+    Math.cos(lat2*Math.PI/180) *
+    Math.sin(dLon/2)**2;
+
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// suavizado
+function smooth(data, windowSize = 5) {
+  return data.map((_, i, arr) => {
+    const start = Math.max(0, i - windowSize);
+    const end = Math.min(arr.length, i + windowSize);
+    const subset = arr.slice(start, end);
+    return subset.reduce((a,b) => a+b, 0) / subset.length;
+  });
+}
+
+fetch('ruta.gpx')
+  .then(res => res.text())
+  .then(gpx => {
+
+    const parser = new DOMParser();
+    const xml = parser.parseFromString(gpx, "text/xml");
+
+    const trkpts = [...xml.getElementsByTagName("trkpt")];
+
+    let coords = [];
+    let elev = [];
+    let dist = [0];
+    let times = [];
+
+    let totalDist = 0;
+
+    trkpts.forEach((p, i) => {
+      const lat = parseFloat(p.getAttribute("lat"));
+      const lon = parseFloat(p.getAttribute("lon"));
+      const ele = p.getElementsByTagName("ele")[0]?.textContent;
+      const time = p.getElementsByTagName("time")[0]?.textContent;
+
+      coords.push([lat, lon]);
+      elev.push(ele ? parseFloat(ele) : 0);
+      times.push(time ? new Date(time) : null);
+
+      if (i > 0) {
+        totalDist += distance(
+          coords[i-1][0], coords[i-1][1],
+          lat, lon
+        );
+        dist.push(totalDist);
+      }
+    });
+
+    elev = smooth(elev);
+
+    // mapa
+    const polyline = L.polyline(coords, {
+      color: '#007bff',
+      weight: 4
+    }).addTo(map);
+
+    map.fitBounds(polyline.getBounds());
+
+    L.marker(coords[0]).addTo(map).bindPopup("Inicio");
+    L.marker(coords[coords.length - 1]).addTo(map).bindPopup("Fin");
+
+    const marker = L.circleMarker(coords[0], {
+      radius: 6,
+      color: 'red'
+    }).addTo(map);
+
+    // stats
+    document.getElementById("dist").innerText = totalDist.toFixed(2);
+
+    // cálculo ritmo
+    let pace = "-";
+    if (times[0] && times[times.length - 1]) {
+      const totalTimeMin = (times[times.length - 1] - times[0]) / 60000;
+      const paceMinKm = totalTimeMin / totalDist;
+
+      const min = Math.floor(paceMinKm);
+      const sec = Math.round((paceMinKm - min) * 60);
+
+      pace = `${min}:${sec.toString().padStart(2,'0')}`;
+    }
+
+    document.getElementById("pace").innerText = pace;
+
+    // gráfico
+    new Chart(document.getElementById("chart"), {
+      type: 'line',
+      data: {
+        labels: dist,
+        datasets: [{
+          label: 'Elevación (m)',
+          data: elev,
+          fill: true,
+          backgroundColor: 'rgba(0,123,255,0.2)',
+          borderColor: '#007bff',
+          tension: 0.2,
+          pointRadius: 0
+        }]
+      },
+      options: {
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
+        onHover: (event, elements) => {
+          if (elements.length > 0) {
+            const i = elements[0].index;
+            marker.setLatLng(coords[i]);
+          }
+        }
+      }
+    });
+
+    // 🎬 ANIMACIÓN
+    let playing = false;
+    let index = 0;
+    let interval;
+
+    document.getElementById("playBtn").onclick = () => {
+      playing = !playing;
+
+      if (playing) {
+        document.getElementById("playBtn").innerText = "⏸ Pause";
+
+        interval = setInterval(() => {
+          marker.setLatLng(coords[index]);
+          index++;
+
+          if (index >= coords.length) {
+            clearInterval(interval);
+            playing = false;
+            document.getElementById("playBtn").innerText = "▶️ Play";
+            index = 0;
+          }
+        }, 50); // velocidad
+      } else {
+        clearInterval(interval);
+        document.getElementById("playBtn").innerText = "▶️ Play";
+      }
+    };
+
+  });
+</script>
+
+</body>
+</html>
